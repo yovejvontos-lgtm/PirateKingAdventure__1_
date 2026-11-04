@@ -1,0 +1,58 @@
+name: Build APK
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      GRADLE_VERSION: "8.5"
+    steps:
+      - uses: actions/checkout@v5
+
+      # يبحث عن مجلد المشروع (فيه settings.gradle) حتى لو كان داخل مجلد فرعي
+      - name: Locate Android project
+        run: |
+          set -e
+          S=$(find . -name settings.gradle -not -path "*/.*" | awk '{ print length, $0 }' | sort -n | head -1 | cut -d' ' -f2-)
+          if [ -z "$S" ]; then
+            echo "::error::settings.gradle not found. Repo contents:"; ls -R | head -50; exit 1
+          fi
+          echo "PROJECT_DIR=$(dirname "$S")" >> "$GITHUB_ENV"
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      # تحميل Three.js داخل التطبيق ليعمل دون إنترنت (مع إعادة المحاولة)
+      - name: Bundle Three.js
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          curl -fL --retry 5 --retry-delay 5 -o app/src/main/assets/three.min.js \
+            https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js
+          test -s app/src/main/assets/three.min.js
+
+      # تثبيت Gradle مباشرة بدون أي خدمة Cache
+      - name: Install Gradle ${{ env.GRADLE_VERSION }}
+        run: |
+          curl -fL --retry 5 --retry-delay 5 -o /tmp/gradle.zip \
+            "https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip"
+          unzip -q /tmp/gradle.zip -d "$HOME"
+          echo "$HOME/gradle-${GRADLE_VERSION}/bin" >> "$GITHUB_PATH"
+
+      - name: Accept Android licenses
+        run: yes | "${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+
+      - name: Build APK
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: gradle assembleDebug --no-daemon --stacktrace
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PirateKingAdventure-apk
+          path: ${{ env.PROJECT_DIR }}/app/build/outputs/apk/debug/app-debug.apk
