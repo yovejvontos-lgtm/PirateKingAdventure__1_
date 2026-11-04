@@ -1,0 +1,386 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>مغامرة ملك القراصنة - النسخة التجريبية</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #87CEEB; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; touch-action: none; }
+        canvas { display: block; width: 100%; height: 100%; }
+        
+        /* واجهة المستخدم */
+        #ui-layer { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; }
+        .hud-text { color: white; text-shadow: 2px 2px 0 #000; font-weight: bold; font-size: 18px; pointer-events: auto; }
+        #health-bar-container { position: absolute; top: 20px; left: 20px; width: 200px; height: 20px; background: #333; border: 2px solid white; border-radius: 10px; }
+        #health-bar { width: 100%; height: 100%; background: #ff3333; border-radius: 8px; transition: width 0.2s; }
+        #enemy-health-container { position: absolute; top: 20px; right: 20px; width: 200px; height: 20px; background: #333; border: 2px solid white; border-radius: 10px; display: none; }
+        #enemy-health-bar { width: 100%; height: 100%; background: #cc0000; border-radius: 8px; transition: width 0.2s; }
+        
+        /* أزرار التحكم */
+        .control-btn { position: absolute; bottom: 20px; width: 70px; height: 70px; background: rgba(255, 255, 255, 0.3); border: 2px solid white; border-radius: 50%; pointer-events: auto; display: flex; justify-content: center; align-items: center; font-size: 24px; color: white; user-select: none; }
+        .control-btn:active { background: rgba(255, 255, 255, 0.6); transform: scale(0.95); }
+        
+        #btn-left { left: 20px; }
+        #btn-right { left: 100px; }
+        #btn-jump { left: 180px; }
+        #btn-attack { right: 20px; background: rgba(255, 0, 0, 0.4); }
+        #btn-skill { right: 100px; background: rgba(0, 100, 255, 0.4); }
+        
+        /* رسالة المهمة */
+        #mission-box { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: rgba(0,0,0,0.8); color: gold; padding: 20px; border-radius: 10px; text-align: center; display: none; pointer-events: auto; border: 2px solid gold; }
+        #close-msg { margin-top: 10px; padding: 5px 15px; background: #fff; color: #000; border: none; cursor: pointer; }
+
+        /* شاشة التحميل */
+        #loading { position: absolute; top:0; left:0; width:100%; height:100%; background: #000; color: white; display: flex; justify-content: center; align-items: center; z-index: 999; }
+    </style>
+    <!-- مكتبة Three.js محلية (تعمل بدون إنترنت) -->
+    <script src="three.min.js"></script>
+</head>
+<body>
+
+    <div id="loading">جاري تحميل عالم ون بيس...</div>
+
+    <div id="ui-layer">
+        <div id="health-bar-container"><div id="health-bar"></div></div>
+        <div id="enemy-health-container"><div id="enemy-health-bar"></div></div>
+        
+        <div id="mission-box">
+            <h2 id="mission-title">مهمة!</h2>
+            <p id="mission-desc">قم بهزيمة القرصان القوي للحصول على زورو.</p>
+            <button id="close-msg" onclick="closeMission()">استمرار</button>
+        </div>
+
+        <!-- أزرار التحكم باللمس -->
+        <div id="btn-left" class="control-btn">◄</div>
+        <div id="btn-right" class="control-btn">►</div>
+        <div id="btn-jump" class="control-btn">▲</div>
+        <div id="btn-attack" class="control-btn">⚔️</div>
+        <div id="btn-skill" class="control-btn">🌪️</div>
+    </div>
+
+    <script>
+        // --- إعدادات اللعبة الأساسية ---
+        let scene, camera, renderer;
+        let player, enemy;
+        let keys = { left: false, right: false, jump: false, attack: false };
+        let gameObjects = [];
+        let isAttacking = false;
+        let playerHealth = 100;
+        let enemyHealth = 100;
+        let missionComplete = false;
+        let crewMembers = ["لوفي"]; // الطاقم المبدئي
+
+        // فيزياء بسيطة
+        let velocityY = 0;
+        let gravity = -0.015;
+        let isGrounded = true;
+        const speed = 0.15;
+        const jumpForce = 0.3;
+
+        function init() {
+            // المشهد
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x87CEEB); // لون السماء
+            scene.fog = new THREE.Fog(0x87CEEB, 10, 50);
+
+            // الكاميرا (زاوية سينمائية خلف الشخصية)
+            camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
+            
+            // الريندر
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.shadowMap.enabled = true;
+            document.body.appendChild(renderer.domElement);
+
+            // الإضاءة
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+            scene.add(ambientLight);
+            const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+            dirLight.position.set(10, 20, 10);
+            dirLight.castShadow = true;
+            scene.add(dirLight);
+
+            createWorld();
+            createPlayer();
+            createEnemy();
+            setupControls();
+            
+            // إخفاء شاشة التحميل
+            document.getElementById('loading').style.display = 'none';
+            showMission("مرحباً بك يا لوفي!", "اذهب وهزم القرصان الشرير هناك للحصول على أول عضو في طاقمك.");
+
+            animate();
+        }
+
+        // --- بناء العالم ---
+        function createWorld() {
+            // البحر
+            const seaGeo = new THREE.PlaneGeometry(200, 200);
+            const seaMat = new THREE.MeshPhongMaterial({ color: 0x006994, transparent: true, opacity: 0.8 });
+            const sea = new THREE.Mesh(seaGeo, seaMat);
+            sea.rotation.x = -Math.PI / 2;
+            sea.position.y = -1;
+            scene.add(sea);
+
+            // الجزيرة
+            const islandGeo = new THREE.CylinderGeometry(15, 20, 2, 32);
+            const islandMat = new THREE.MeshLambertMaterial({ color: 0x228B22 }); // أخضر
+            const island = new THREE.Mesh(islandGeo, islandMat);
+            island.position.y = -1;
+            island.receiveShadow = true;
+            scene.add(island);
+
+            // شجرة نخيل بسيطة
+            const trunkGeo = new THREE.CylinderGeometry(0.5, 0.7, 5, 8);
+            const trunkMat = new THREE.MeshLambertMaterial({ color: 0x8B4513 });
+            const trunk = new THREE.Mesh(trunkGeo, trunkMat);
+            trunk.position.set(5, 2.5, 5);
+            scene.add(trunk);
+
+            const leavesGeo = new THREE.ConeGeometry(3, 3, 8);
+            const leavesMat = new THREE.MeshLambertMaterial({ color: 0x006400 });
+            const leaves = new THREE.Mesh(leavesGeo, leavesMat);
+            leaves.position.set(5, 5.5, 5);
+            scene.add(leaves);
+        }
+
+        // --- اللاعب (لوفي) ---
+        function createPlayer() {
+            const group = new THREE.Group();
+
+            // الجسم
+            const bodyGeo = new THREE.BoxGeometry(0.8, 1.2, 0.5);
+            const bodyMat = new THREE.MeshLambertMaterial({ color: 0xff0000 }); // قميص أحمر
+            const body = new THREE.Mesh(bodyGeo, bodyMat);
+            body.position.y = 1.2;
+            body.castShadow = true;
+            group.add(body);
+
+            // الرأس
+            const headGeo = new THREE.SphereGeometry(0.4, 16, 16);
+            const headMat = new THREE.MeshLambertMaterial({ color: 0xffccaa }); // لون البشرة
+            const head = new THREE.Mesh(headGeo, headMat);
+            head.position.y = 2.2;
+            group.add(head);
+
+            // قبعة القش (مبسطة)
+            const hatGeo = new THREE.CylinderGeometry(0.5, 0.5, 0.1, 16);
+            const hatMat = new THREE.MeshLambertMaterial({ color: 0xffff00 });
+            const hat = new THREE.Mesh(hatGeo, hatMat);
+            hat.position.y = 2.5;
+            group.add(hat);
+            
+            // حافة القبعة
+            const brimGeo = new THREE.TorusGeometry(0.5, 0.05, 8, 16);
+            const brim = new THREE.Mesh(brimGeo, hatMat);
+            brim.rotation.x = Math.PI / 2;
+            brim.position.y = 2.5;
+            group.add(brim);
+
+            player = group;
+            player.position.set(0, 0, 0);
+            scene.add(player);
+        }
+
+        // --- العدو ---
+        function createEnemy() {
+            const group = new THREE.Group();
+
+            // جسم العدو
+            const bodyGeo = new THREE.BoxGeometry(1, 1.5, 0.6);
+            const bodyMat = new THREE.MeshLambertMaterial({ color: 0x4B0082 }); // أرجواني
+            const body = new THREE.Mesh(bodyGeo, bodyMat);
+            body.position.y = 1.5;
+            body.castShadow = true;
+            group.add(body);
+
+            // رأس العدو
+            const headGeo = new THREE.BoxGeometry(0.6, 0.6, 0.6);
+            const headMat = new THREE.MeshLambertMaterial({ color: 0xcccccc });
+            const head = new THREE.Mesh(headGeo, headMat);
+            head.position.y = 2.6;
+            group.add(head);
+
+            enemy = group;
+            enemy.position.set(0, 0, -10); // يقف بعيداً قليلاً
+            scene.add(enemy);
+            
+            // تفعيل شريط صحة العدو
+            document.getElementById('enemy-health-container').style.display = 'block';
+        }
+
+        // --- منطق الحركة والفيزياء ---
+        function updatePhysics() {
+            if (!player) return;
+
+            // الحركة الأفقية
+            if (keys.left) player.position.x -= speed;
+            if (keys.right) player.position.x += speed;
+
+            // حدود الجزيرة (بسيطة)
+            if (player.position.x > 18) player.position.x = 18;
+            if (player.position.x < -18) player.position.x = -18;
+
+            // الجاذبية والقفز
+            if (keys.jump && isGrounded) {
+                velocityY = jumpForce;
+                isGrounded = false;
+            }
+
+            player.position.y += velocityY;
+            velocityY += gravity;
+
+            // الاصطدام بالأرض
+            if (player.position.y <= 0) {
+                player.position.y = 0;
+                velocityY = 0;
+                isGrounded = true;
+            }
+
+            // تحديث الكاميرا لتتبع اللاعب
+            // وضع سينمائي: الكاميرا خلف اللاعب وأعلى منه
+            const relativeCameraOffset = new THREE.Vector3(0, 5, 8); 
+            const cameraOffset = relativeCameraOffset.applyMatrix4(player.matrixWorld);
+            
+            // تنعيم حركة الكاميرا (Lerp)
+            camera.position.lerp(cameraOffset, 0.1);
+            camera.lookAt(player.position.x, player.position.y + 2, player.position.z);
+        }
+
+        // --- نظام القتال ---
+        function updateCombat() {
+            if (isAttacking) return;
+
+            if (keys.attack) {
+                isAttacking = true;
+                
+                // حركة ضربة سريعة
+                const originalZ = player.position.z;
+                player.position.z += 1; // قفزة للأمام
+                
+                // التحقق من الإصابة
+                const distance = player.position.distanceTo(enemy.position);
+                if (distance < 3) {
+                    takeDamage(enemy, 20);
+                    createEffect(enemy.position, "#ffff00"); // تأثير بصري أصفر
+                }
+
+                setTimeout(() => {
+                    player.position.z = originalZ;
+                    isAttacking = false;
+                }, 300);
+            }
+        }
+
+        function takeDamage(target, amount) {
+            if (target === enemy) {
+                enemyHealth -= amount;
+                const bar = document.getElementById('enemy-health-bar');
+                bar.style.width = Math.max(0, enemyHealth) + '%';
+                
+                // اهتزاز العدو
+                enemy.position.y += 0.5;
+                setTimeout(() => enemy.position.y -= 0.5, 100);
+
+                if (enemyHealth <= 0) {
+                    defeatEnemy();
+                }
+            } else if (target === player) {
+                playerHealth -= amount;
+                const bar = document.getElementById('health-bar');
+                bar.style.width = Math.max(0, playerHealth) + '%';
+            }
+        }
+
+        function defeatEnemy() {
+            enemy.position.y = -10; // يختفي العدو
+            document.getElementById('enemy-health-container').style.display = 'none';
+            showMission("انتصار!", "لقد هزمت العدو! انضم إليك الآن 'زورو' إلى طاقمك!");
+            crewMembers.push("زورو");
+            missionComplete = true;
+        }
+
+        function createEffect(pos, color) {
+            // إنشاء جسيمات بسيطة عند الضربة
+            const geo = new THREE.SphereGeometry(0.2);
+            const mat = new THREE.MeshBasicMaterial({ color: color });
+            const particle = new THREE.Mesh(geo, mat);
+            particle.position.copy(pos);
+            particle.position.y += 2;
+            scene.add(particle);
+            setTimeout(() => scene.remove(particle), 200);
+        }
+
+        // --- واجهة المستخدم والتحكم ---
+        function setupControls() {
+            const btnLeft = document.getElementById('btn-left');
+            const btnRight = document.getElementById('btn-right');
+            const btnJump = document.getElementById('btn-jump');
+            const btnAttack = document.getElementById('btn-attack');
+            const btnSkill = document.getElementById('btn-skill');
+
+            const addTouch = (elem, key) => {
+                elem.addEventListener('touchstart', (e) => { e.preventDefault(); keys[key] = true; });
+                elem.addEventListener('touchend', (e) => { e.preventDefault(); keys[key] = false; });
+                elem.addEventListener('touchcancel', (e) => { keys[key] = false; });
+                elem.addEventListener('mousedown', (e) => { keys[key] = true; });
+                elem.addEventListener('mouseup', (e) => { keys[key] = false; });
+            };
+
+            addTouch(btnLeft, 'left');
+            addTouch(btnRight, 'right');
+            addTouch(btnJump, 'jump');
+            addTouch(btnAttack, 'attack');
+            
+            // مهارة خاصة (تستخدم فقط إذا كان لديك زورو - محاكاة)
+            addTouch(btnSkill, 'skill');
+            btnSkill.addEventListener('click', () => {
+                if (crewMembers.includes("زورو")) {
+                    alert("مهارة زورو: قطع الرياح! (تأثير بصري فقط في هذه النسخة)");
+                    createEffect(player.position, "#00ffff");
+                } else {
+                    alert("تحتاج إلى جمع زورو أولاً لاستخدام هذه المهارة.");
+                }
+            });
+        }
+
+        // --- حلقة اللعبة الرئيسية ---
+        function animate() {
+            requestAnimationFrame(animate);
+            updatePhysics();
+            updateCombat();
+            
+            // تحريك العدو بشكل بسيط (AI بسيط)
+            if (enemy.position.y > -5) { // إذا لم يكن مهزوماً
+                 // العدو يتحرك ببطء نحو اللاعب
+                 if (enemy.position.x < player.position.x) enemy.position.x += 0.02;
+                 if (enemy.position.x > player.position.x) enemy.position.x -= 0.02;
+            }
+
+            renderer.render(scene, camera);
+        }
+
+        // --- وظائف المساعدة ---
+        function showMission(title, desc) {
+            document.getElementById('mission-title').innerText = title;
+            document.getElementById('mission-desc').innerText = desc;
+            document.getElementById('mission-box').style.display = 'block';
+        }
+
+        function closeMission() {
+            document.getElementById('mission-box').style.display = 'none';
+        }
+
+        // بدء اللعبة
+        init();
+
+        // تعديل حجم الشاشة عند تدوير الهاتف
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+    </script>
+</body>
+</html>
